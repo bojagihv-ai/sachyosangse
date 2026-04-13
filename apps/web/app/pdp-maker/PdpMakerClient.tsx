@@ -1,33 +1,50 @@
-"use client";
+﻿"use client";
 
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Clock3, Copy, FolderOpen, Loader2, RectangleHorizontal, RectangleVertical, Settings2, Smartphone, Sparkles, Square, Trash2, Upload, Wand2 } from "lucide-react";
-import type { AspectRatio, GeneratedResult, PdpAnalyzeResponse, ReferenceModelUsage } from "@runacademy/shared";
+import type { AspectRatio, GeneratedResult, PdpAnalyzeResponse, PdpRuntimeConfigResponse, ReferenceModelUsage } from "@runacademy/shared";
 import type { PdpAppState, PdpDraftSummary, PdpEditorDraftState, PreparedImageDraft } from "./pdp-drafts";
 import { deletePdpDraft, getPdpDraft, listPdpDrafts, savePdpDraft } from "./pdp-drafts";
 import { PdpEditor } from "./PdpEditor";
 import { PdpSettingsSheet } from "./PdpSettingsSheet";
 import styles from "./pdp-maker.module.css";
 import {
+  DEFAULT_PDP_IMAGE_MODEL,
   loadPdpClientSettings,
   resolveGeminiApiKeyHeaderValue,
   savePdpClientSettings,
   type PdpClientSettings
 } from "./pdp-settings";
-import { RATIO_OPTIONS, TONE_OPTIONS, apiJson, prepareImageFile } from "./pdp-utils";
+import { RATIO_OPTIONS, TONE_OPTIONS, apiJson, getPdpImageModelLabel, prepareImageFile } from "./pdp-utils";
 
 type PreparedImage = PreparedImageDraft;
 
+const PDP_WORKSPACE_SNAPSHOT_STORAGE_KEY = "hanirum-pdp-maker-workspace-v1";
+const PDP_LAST_DRAFT_STORAGE_KEY = "hanirum-pdp-maker-last-draft-v1";
+
+interface PdpWorkspaceSnapshot {
+  additionalInfo: string;
+  desiredTone: string;
+  aspectRatio: AspectRatio;
+}
+
+const DEFAULT_WORKSPACE_SNAPSHOT: PdpWorkspaceSnapshot = {
+  additionalInfo: "",
+  desiredTone: "",
+  aspectRatio: "9:16"
+};
+
 export function PdpMakerClient() {
+  const initialWorkspaceSnapshotRef = useRef<PdpWorkspaceSnapshot>(loadPdpWorkspaceSnapshot());
   const [appState, setAppState] = useState<PdpAppState>("upload");
   const [preparedImage, setPreparedImage] = useState<PreparedImage | null>(null);
   const [modelImage, setModelImage] = useState<PreparedImage | null>(null);
   const [modelImageUsage, setModelImageUsage] = useState<ReferenceModelUsage | null>(null);
   const [result, setResult] = useState<GeneratedResult | null>(null);
-  const [additionalInfo, setAdditionalInfo] = useState("");
-  const [desiredTone, setDesiredTone] = useState("");
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
-  const [notice, setNotice] = useState("브라우저에 초안이 저장되며, 저장한 작업은 이 화면에서 이어서 열 수 있습니다.");
+  const [additionalInfo, setAdditionalInfo] = useState(initialWorkspaceSnapshotRef.current.additionalInfo);
+  const [desiredTone, setDesiredTone] = useState(initialWorkspaceSnapshotRef.current.desiredTone);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(initialWorkspaceSnapshotRef.current.aspectRatio);
+  const [notice, setNotice] = useState("브라우저 초안은 자동 저장되며, 같은 화면에서 바로 이어서 작업할 수 있습니다.");
   const [errorMessage, setErrorMessage] = useState("");
   const [errorDetail, setErrorDetail] = useState("");
   const [showErrorDetail, setShowErrorDetail] = useState(false);
@@ -45,25 +62,42 @@ export function PdpMakerClient() {
   const [isDirty, setIsDirty] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [clientSettings, setClientSettings] = useState<PdpClientSettings>(() => loadPdpClientSettings());
+  const [runtimeConfig, setRuntimeConfig] = useState<PdpRuntimeConfigResponse | null>(null);
   const isApplyingDraftRef = useRef(false);
   const saveInFlightRef = useRef(false);
+  const autoResumeAttemptedRef = useRef(false);
 
   const selectedRatio = useMemo(() => RATIO_OPTIONS.find((option) => option.value === aspectRatio) ?? RATIO_OPTIONS[2], [aspectRatio]);
   const selectedToneLabel = desiredTone || "AI 자동 추천";
   const preparedImageDisplayName = preparedImage ? formatCompactFileName(preparedImage.fileName) : "";
   const modelImageDisplayName = modelImage ? formatCompactFileName(modelImage.fileName) : "";
   const hasDraftContent = Boolean(preparedImage || modelImage || result || additionalInfo.trim() || desiredTone.trim() || activeDraftId);
-  const effectiveGeminiApiKey = resolveGeminiApiKeyHeaderValue(clientSettings);
-  const hasAvailableGeminiKey = Boolean(effectiveGeminiApiKey);
-  const canAnalyze = Boolean(preparedImage && (!modelImage || modelImageUsage) && hasAvailableGeminiKey);
-  const apiConnectionLabel = effectiveGeminiApiKey ? "개인 API 키" : "키 필요";
+  const resolvedConnectionMode = resolveConnectionMode(clientSettings, runtimeConfig);
+  const selectedImageModel = clientSettings.selectedImageModel ?? DEFAULT_PDP_IMAGE_MODEL;
+  const selectedImageModelLabel = getPdpImageModelLabel(selectedImageModel, runtimeConfig);
+  const serverConnectionAvailable = Boolean(runtimeConfig && !runtimeConfig.requiresClientApiKey);
+  const effectiveGeminiApiKey =
+    resolvedConnectionMode === "gemini-api-key" ? resolveGeminiApiKeyHeaderValue(clientSettings) : null;
+  const hasAvailableCredential =
+    resolvedConnectionMode === "server" ? serverConnectionAvailable : Boolean(effectiveGeminiApiKey);
+  const canAnalyze = Boolean(preparedImage && (!modelImage || modelImageUsage) && hasAvailableCredential);
+  const apiConnectionLabel =
+    resolvedConnectionMode === "server"
+      ? runtimeConfig?.provider === "vertex-ai"
+        ? `Vertex AI · ${selectedImageModelLabel}`
+        : runtimeConfig?.provider === "gemini-api-key"
+          ? `서버 Gemini · ${selectedImageModelLabel}`
+          : `서버 연결 필요 · ${selectedImageModelLabel}`
+      : effectiveGeminiApiKey
+        ? `개인 API 키 · ${selectedImageModelLabel}`
+        : `키 필요 · ${selectedImageModelLabel}`;
 
   const refreshDrafts = useCallback(async () => {
     setIsLoadingDrafts(true);
     try {
       setDrafts(await listPdpDrafts());
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "저장된 작업 목록을 불러오지 못했습니다.");
+      setErrorMessage(error instanceof Error ? error.message : "저장한 작업 목록을 불러오지 못했습니다.");
     } finally {
       setIsLoadingDrafts(false);
     }
@@ -76,6 +110,38 @@ export function PdpMakerClient() {
   useEffect(() => {
     setClientSettings(loadPdpClientSettings());
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    void apiJson<PdpRuntimeConfigResponse>("/pdp/config", { method: "GET" }, { geminiApiKey: null })
+      .then((response) => {
+        if (isMounted) {
+          setRuntimeConfig(response);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setRuntimeConfig(null);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isApplyingDraftRef.current) {
+      return;
+    }
+
+    savePdpWorkspaceSnapshot({
+      additionalInfo,
+      desiredTone,
+      aspectRatio
+    });
+  }, [additionalInfo, aspectRatio, desiredTone]);
 
   useEffect(() => {
     if (isApplyingDraftRef.current || !hasDraftContent) {
@@ -118,7 +184,7 @@ export function PdpMakerClient() {
       setErrorMessage("");
       setErrorDetail("");
       setShowErrorDetail(false);
-      setNotice(`${file.name} 모델 이미지를 준비했습니다. 히어로우 전용 또는 전체 일관성 유지 방식을 선택해 주세요.`);
+      setNotice(`${file.name} 모델 이미지를 준비했습니다. 히어로 전용인지 전체 공통인지 선택해 주세요.`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "모델 이미지를 준비하지 못했습니다.");
       setErrorDetail(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
@@ -160,6 +226,7 @@ export function PdpMakerClient() {
         const savedDraft = await savePdpDraft(input);
         isApplyingDraftRef.current = true;
         setActiveDraftId(savedDraft.id);
+        savePdpLastDraftId(savedDraft.id);
         setDraftCreatedAt(savedDraft.createdAt);
         setLastSavedAt(savedDraft.updatedAt);
         setSaveState("saved");
@@ -211,12 +278,14 @@ export function PdpMakerClient() {
     setAdditionalInfo("");
     setDesiredTone("");
     setAspectRatio("9:16");
-    setNotice("새 이미지로 다시 시작할 수 있습니다.");
+    setNotice("새 이미지로 다시 시작할 준비가 되었습니다.");
     setErrorMessage("");
     setErrorDetail("");
     setShowErrorDetail(false);
     setEditorDraftState(null);
     setActiveDraftId(null);
+    clearPdpLastDraftId();
+    clearPdpWorkspaceSnapshot();
     setDraftCreatedAt(null);
     setLastSavedAt(null);
     setSaveState("idle");
@@ -228,8 +297,8 @@ export function PdpMakerClient() {
   }, []);
 
   const handleLoadDraft = useCallback(
-    async (draftId: string) => {
-      const canContinue = await confirmSaveBeforeLeaving();
+    async (draftId: string, options?: { skipConfirm?: boolean; autoRestore?: boolean }) => {
+      const canContinue = options?.skipConfirm ? true : await confirmSaveBeforeLeaving();
       if (!canContinue) {
         return;
       }
@@ -242,13 +311,15 @@ export function PdpMakerClient() {
       try {
         const draft = await getPdpDraft(draftId);
         if (!draft) {
-          setErrorMessage("저장된 작업을 찾지 못했습니다.");
+          setErrorMessage("저장한 작업을 찾지 못했습니다.");
+          clearPdpLastDraftId();
           await refreshDrafts();
           return;
         }
 
         isApplyingDraftRef.current = true;
         setActiveDraftId(draft.id);
+        savePdpLastDraftId(draft.id);
         setDraftCreatedAt(draft.createdAt);
         setLastSavedAt(draft.updatedAt);
         setPreparedImage(draft.preparedImage);
@@ -258,14 +329,16 @@ export function PdpMakerClient() {
         setAdditionalInfo(draft.additionalInfo);
         setDesiredTone(draft.desiredTone);
         setAspectRatio(draft.aspectRatio);
-        setNotice(draft.notice);
+        setNotice(
+          options?.autoRestore ? "최근 작업을 자동으로 복원했습니다. 바로 이어서 편집할 수 있습니다." : draft.notice
+        );
         setEditorDraftState(draft.editorState);
         setAppState(draft.result ? "editor" : "upload");
         setSaveState("saved");
         setIsDirty(false);
         setEditorSessionKey((current) => current + 1);
       } catch (error) {
-        setErrorMessage("저장된 작업을 불러오지 못했습니다.");
+        setErrorMessage("저장한 작업을 불러오지 못했습니다.");
         setErrorDetail(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
       } finally {
         requestAnimationFrame(() => {
@@ -277,21 +350,43 @@ export function PdpMakerClient() {
     [confirmSaveBeforeLeaving, refreshDrafts]
   );
 
+  useEffect(() => {
+    if (autoResumeAttemptedRef.current || isLoadingDrafts || isLoadingDraft || hasDraftContent || activeDraftId) {
+      return;
+    }
+
+    autoResumeAttemptedRef.current = true;
+    const lastDraftId = loadPdpLastDraftId();
+    if (!lastDraftId) {
+      return;
+    }
+
+    if (!drafts.some((draft) => draft.id === lastDraftId)) {
+      clearPdpLastDraftId();
+      return;
+    }
+
+    void handleLoadDraft(lastDraftId, { skipConfirm: true, autoRestore: true });
+  }, [activeDraftId, drafts, handleLoadDraft, hasDraftContent, isLoadingDraft, isLoadingDrafts]);
+
   const handleDeleteDraft = useCallback(
     async (draftId: string) => {
-      const shouldDelete = window.confirm("이 저장된 작업을 삭제할까요?");
+      const shouldDelete = window.confirm("저장한 작업을 삭제할까요?");
       if (!shouldDelete) {
         return;
       }
 
       try {
         await deletePdpDraft(draftId);
+        if (loadPdpLastDraftId() === draftId) {
+          clearPdpLastDraftId();
+        }
         if (activeDraftId === draftId) {
           resetWorkspace();
         }
         await refreshDrafts();
       } catch (error) {
-        setErrorMessage("저장된 작업을 삭제하지 못했습니다.");
+        setErrorMessage("저장한 작업을 삭제하지 못했습니다.");
         setErrorDetail(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
       }
     },
@@ -334,8 +429,12 @@ export function PdpMakerClient() {
       return;
     }
 
-    if (!hasAvailableGeminiKey) {
-      setErrorMessage("설정 메뉴에서 본인 Gemini API 키를 먼저 입력해 주세요.");
+    if (!hasAvailableCredential) {
+      setErrorMessage(
+        resolvedConnectionMode === "server"
+          ? "서버 Vertex AI 연결이 아직 준비되지 않았습니다. 서버 설정을 먼저 확인해 주세요."
+          : "설정 메뉴에서 본인 Gemini API 키를 먼저 입력해 주세요."
+      );
       return;
     }
 
@@ -361,7 +460,8 @@ export function PdpMakerClient() {
           modelImageFileName: modelImage?.fileName,
           additionalInfo: additionalInfo.trim() || undefined,
           desiredTone: desiredTone.trim() || undefined,
-          aspectRatio
+          aspectRatio,
+          imageModel: selectedImageModel
         })
       }, { geminiApiKey: effectiveGeminiApiKey });
 
@@ -375,7 +475,7 @@ export function PdpMakerClient() {
       setResult(response.result);
       setEditorDraftState(null);
       setEditorSessionKey((current) => current + 1);
-      setNotice("분석이 완료되었습니다. 섹션별 이미지를 재생성하거나 텍스트를 직접 배치해 보세요.");
+      setNotice("분석이 완료됐습니다. 섹션별 이미지를 생성하거나 텍스트를 직접 배치해 보세요.");
       setAppState("editor");
     } catch (error) {
       setAppState("upload");
@@ -406,7 +506,12 @@ export function PdpMakerClient() {
   const handleSaveSettings = (nextSettings: PdpClientSettings) => {
     savePdpClientSettings(nextSettings);
     setClientSettings(loadPdpClientSettings());
-    setNotice("개인 Gemini API 키를 저장했습니다. 이 브라우저에서는 입력한 키로 바로 작업할 수 있습니다.");
+    const nextModelLabel = getPdpImageModelLabel(nextSettings.selectedImageModel, runtimeConfig);
+    setNotice(
+      nextSettings.connectionMode === "server"
+        ? `${nextModelLabel} 모델을 서버 연결로 저장했습니다. 서버가 Vertex AI면 이후 생성도 Vertex로 진행됩니다.`
+        : `${nextModelLabel} 모델과 개인 Gemini API 키를 저장했습니다.`
+    );
   };
 
   if (appState === "editor" && result) {
@@ -417,6 +522,7 @@ export function PdpMakerClient() {
           aspectRatio={aspectRatio}
           geminiApiKey={effectiveGeminiApiKey}
           desiredTone={desiredTone}
+          imageModel={selectedImageModel}
           initialDraftState={editorDraftState}
           initialResult={result}
           lastSavedAt={lastSavedAt}
@@ -434,6 +540,7 @@ export function PdpMakerClient() {
           onOpenChange={setIsSettingsOpen}
           onSave={handleSaveSettings}
           open={isSettingsOpen}
+          runtimeConfig={runtimeConfig}
           settings={clientSettings}
         />
       </>
@@ -447,7 +554,7 @@ export function PdpMakerClient() {
           <div className={styles.toolHeaderCopy}>
             <h1 className={styles.toolTitle}>
               <button className={styles.brandHomeButton} onClick={() => void handleGoToMain()} type="button">
-                한이룸의 상세페이지 마법사 2.0
+                세이룸의 상세페이지 마법사 2.0
               </button>
             </h1>
           </div>
@@ -465,9 +572,9 @@ export function PdpMakerClient() {
           <section className={styles.savedDraftsPanel}>
             <div className={styles.savedDraftsHeader}>
               <div>
-                <span className={styles.panelLabel}>저장된 작업</span>
+                <span className={styles.panelLabel}>저장한 작업</span>
                 <h2 className={styles.savedDraftsTitle}>이어서 작업하기</h2>
-                <p className={styles.panelDescription}>수동 저장과 30초 자동 저장으로 남겨둔 초안을 바로 이어서 열 수 있습니다.</p>
+                <p className={styles.panelDescription}>수동 저장과 30초 자동 저장으로 최근 초안도 바로 이어서 열 수 있습니다.</p>
               </div>
               <div className={styles.savedDraftsMeta}>
                 <span className={styles.metaPill}>자동 저장 30초</span>
@@ -478,7 +585,7 @@ export function PdpMakerClient() {
             {isLoadingDrafts ? (
               <div className={styles.savedDraftsEmpty}>
                 <Loader2 className={styles.spinIcon} size={16} />
-                저장된 작업을 불러오는 중입니다.
+                저장한 작업을 불러오는 중입니다.
               </div>
             ) : drafts.length ? (
               <div className={styles.savedDraftGrid}>
@@ -520,7 +627,7 @@ export function PdpMakerClient() {
             ) : (
               <div className={styles.savedDraftsEmpty}>
                 <Clock3 size={16} />
-                아직 저장된 작업이 없습니다. 이미지를 올리고 저장하면 이곳에서 다시 이어서 열 수 있습니다.
+                아직 저장한 작업이 없습니다. 이미지를 올리고 저장하면 다음에 다시 이어서 열 수 있습니다.
               </div>
             )}
           </section>
@@ -546,18 +653,18 @@ export function PdpMakerClient() {
                 <div className={styles.sectionHeading}>
                   <span className={styles.sectionStep}>1</span>
                   <div className={styles.sectionHeadingCopy}>
-                    <h2>원본 이미지 업로드</h2>
-                    <p>한 장만 올려도 됩니다. 업로드 후 AI 전송용으로 자동 압축합니다.</p>
+                    <h2>기본 이미지 업로드</h2>
+                    <p>제품 사진만 올리면 됩니다. 업로드 즉시 AI 전송용으로 자동 최적화됩니다.</p>
                   </div>
                 </div>
               </div>
 
               <UploadDropzone
-                description="드래그 앤 드롭 또는 클릭으로 JPG, PNG, WEBP 파일을 선택할 수 있습니다."
-                hint={preparedImage?.fileName ? `선택됨: ${preparedImageDisplayName}` : "권장 최대 10MB"}
+                description="드래그 앤 드롭이나 클릭으로 JPG, PNG, WEBP 파일을 선택할 수 있습니다."
+                hint={preparedImage?.fileName ? `선택됨 ${preparedImageDisplayName}` : "권장 최대 10MB"}
                 onSelect={handlePreparedImage}
                 selectedFileName={preparedImage?.fileName}
-                title="제품 이미지를 업로드하세요"
+                title="제품 이미지를 업로드해 주세요"
               />
 
               {preparedImage ? (
@@ -569,7 +676,7 @@ export function PdpMakerClient() {
                     <strong title={preparedImage.fileName}>{preparedImageDisplayName}</strong>
                     <div className={styles.metaList}>
                       <div className={styles.metaItem}>
-                        <span>전송 포맷</span>
+                        <span>전송 형식</span>
                         <strong>JPEG 1024px</strong>
                       </div>
                       <div className={styles.metaItem}>
@@ -587,9 +694,9 @@ export function PdpMakerClient() {
                 <div className={styles.emptyStatePanel}>
                   <Sparkles size={18} />
                   <div>
-                    <strong>업로드 후 바로 미리보기가 들어옵니다.</strong>
+                    <strong>업로드하면 바로 미리보기가 나타납니다.</strong>
                     <ul className={styles.emptyList}>
-                      <li>배경이 너무 복잡하지 않은 제품컷이면 분석 품질이 더 안정적입니다.</li>
+                      <li>배경이 너무 복잡하지 않은 제품컷이면 분석 정확도가 더 안정적입니다.</li>
                       <li>투명 배경 PNG도 가능하지만, 제품이 충분히 크게 보이는 이미지를 추천합니다.</li>
                     </ul>
                   </div>
@@ -602,7 +709,7 @@ export function PdpMakerClient() {
                     <span className={styles.panelLabel}>선택 옵션</span>
                     <h3 className={styles.optionalUploadTitle}>모델 이미지 업로드</h3>
                     <p className={styles.optionalUploadDescription}>
-                      인물 이미지를 올리면 첫 히어로우에만 쓰거나, 모델컷 전체를 같은 인물로 맞출 수 있습니다.
+                      인물 이미지를 올리면 첫 히어로컷만 맞출지, 모델컷 전체를 같은 인물로 맞출지 정할 수 있습니다.
                     </p>
                   </div>
                   {modelImage ? (
@@ -614,7 +721,7 @@ export function PdpMakerClient() {
                         setErrorMessage("");
                         setErrorDetail("");
                         setShowErrorDetail(false);
-                        setNotice("모델 이미지를 제거했습니다. 일반 페르소나 설정으로 계속 편집할 수 있습니다.");
+                        setNotice("모델 이미지를 제거했습니다. 일반 흐름으로 계속 편집할 수 있습니다.");
                       }}
                       type="button"
                     >
@@ -627,10 +734,10 @@ export function PdpMakerClient() {
                 <UploadDropzone
                   compact
                   description="선택 사항입니다. 업로드한 인물 이미지는 모델컷 생성 시 참조 이미지로 사용됩니다."
-                  hint={modelImage?.fileName ? `선택됨: ${modelImageDisplayName}` : "권장 최대 10MB"}
+                  hint={modelImage?.fileName ? `선택됨 ${modelImageDisplayName}` : "권장 최대 10MB"}
                   onSelect={handleModelImage}
                   selectedFileName={modelImage?.fileName}
-                  title="모델 이미지를 업로드하세요"
+                  title="모델 이미지를 업로드해 주세요"
                 />
 
                 {modelImage ? (
@@ -643,19 +750,19 @@ export function PdpMakerClient() {
                       <div className={styles.metaList}>
                         <div className={styles.metaItem}>
                           <span>적용 대상</span>
-                          <strong>{modelImageUsage === "all-sections" ? "전체 모델컷" : modelImageUsage === "hero-only" ? "히어로우 섹션" : "선택 필요"}</strong>
+                          <strong>{modelImageUsage === "all-sections" ? "전체 모델컷" : modelImageUsage === "hero-only" ? "히어로 섹션" : "선택 필요"}</strong>
                         </div>
                         <div className={styles.metaItem}>
-                          <span>활용 방식</span>
+                          <span>사용 방식</span>
                           <strong>참조 모델</strong>
                         </div>
                         <div className={styles.metaItem}>
-                          <span>편집 영향</span>
+                          <span>연출 영향</span>
                           <strong>
                             {modelImageUsage === "all-sections"
-                              ? "타깃 페르소나 잠금"
+                              ? "전 컷 인물 통일"
                               : modelImageUsage === "hero-only"
-                                ? "히어로우만 잠금"
+                                ? "히어로컷만 반영"
                                 : "선택 필요"}
                           </strong>
                         </div>
@@ -666,10 +773,10 @@ export function PdpMakerClient() {
                   <div className={styles.emptyStatePanel}>
                     <Sparkles size={18} />
                     <div>
-                      <strong>없어도 상세페이지 생성은 가능합니다.</strong>
+                      <strong>모델 이미지 없이도 상세페이지 생성은 가능합니다.</strong>
                       <ul className={styles.emptyList}>
-                        <li>히어로우에 특정 모델컷을 고정하고 싶을 때만 업로드하세요.</li>
-                        <li>전체 일관성 유지를 고르면 모델컷 포함 시 동일 인물 기준으로 생성됩니다.</li>
+                        <li>히어로컷이나 특정 모델컷을 고정하고 싶을 때만 업로드해도 충분합니다.</li>
+                        <li>전체 모델컷을 고르면 업로드한 인물을 기준으로 통일감 있게 생성됩니다.</li>
                       </ul>
                     </div>
                   </div>
@@ -690,8 +797,8 @@ export function PdpMakerClient() {
                         }}
                         type="button"
                       >
-                        <strong>히어로우에만 사용</strong>
-                        <span>맨 첫 히어로우 섹션의 모델컷에만 업로드한 인물을 적용합니다.</span>
+                        <strong>히어로컷만 사용</strong>
+                        <span>맨 첫 히어로 섹션에만 업로드한 인물 이미지를 반영합니다.</span>
                       </button>
                       <button
                         className={modelImageUsage === "all-sections" ? styles.modelUsageCardActive : styles.modelUsageCard}
@@ -701,8 +808,8 @@ export function PdpMakerClient() {
                         }}
                         type="button"
                       >
-                        <strong>전체 일관성 유지</strong>
-                        <span>모델컷 포함 시 업로드한 인물을 계속 사용하고 타깃 페르소나 설정은 비활성화됩니다.</span>
+                        <strong>전체 모델컷 공통</strong>
+                        <span>모델컷 전반에서 업로드한 인물을 계속 사용하고, 흐름이나 설정을 통일합니다.</span>
                       </button>
                     </div>
                     {!modelImageUsage ? (
@@ -724,7 +831,7 @@ export function PdpMakerClient() {
                   {errorDetail ? (
                     <div className={styles.errorDetailWrap}>
                       <button className={styles.inlineButton} onClick={() => setShowErrorDetail((current) => !current)} type="button">
-                        {showErrorDetail ? "로그 숨기기" : "로그 보기"}
+                        {showErrorDetail ? "로그 닫기" : "로그 보기"}
                       </button>
                       {showErrorDetail ? (
                         <div className={styles.errorDetail}>
@@ -811,16 +918,16 @@ export function PdpMakerClient() {
               <div className={styles.noticePanel}>
                 <div className={styles.noticeTitle}>
                   <Sparkles size={16} />
-                  현재 세션 안내
+                  현재 진행 안내
                 </div>
                 <p>{notice}</p>
                 <div className={styles.noticeMeta}>
                   <div className={styles.noticeMetaItem}>
-                    <span>선택한 톤</span>
+                    <span>선택 톤</span>
                     <strong>{selectedToneLabel}</strong>
                   </div>
                   <div className={styles.noticeMetaItem}>
-                    <span>선택한 비율</span>
+                    <span>선택 비율</span>
                     <strong>{selectedRatio.label}</strong>
                   </div>
                   <div className={styles.noticeMetaItem}>
@@ -836,7 +943,7 @@ export function PdpMakerClient() {
               </button>
 
               <p className={styles.helperCopy}>
-                첫 분석에서는 블루프린트와 함께 첫 섹션 이미지까지 자동 생성됩니다. 모델 이미지를 올렸다면 사용 방식을 먼저 고른 뒤 시작해 주세요.
+                첫 분석에서는 블루프린트와 첫 섹션 이미지까지 자동 생성됩니다. 모델 이미지를 올렸다면 사용 방식을 먼저 고른 뒤 시작해 주세요.
               </p>
             </aside>
           </div>
@@ -848,10 +955,27 @@ export function PdpMakerClient() {
         onOpenChange={setIsSettingsOpen}
         onSave={handleSaveSettings}
         open={isSettingsOpen}
+        runtimeConfig={runtimeConfig}
         settings={clientSettings}
       />
     </main>
   );
+}
+
+function resolveConnectionMode(settings: PdpClientSettings, runtimeConfig: PdpRuntimeConfigResponse | null) {
+  if (settings.connectionMode === "server" && runtimeConfig && !runtimeConfig.requiresClientApiKey) {
+    return "server" as const;
+  }
+
+  if (settings.connectionMode === "gemini-api-key") {
+    if (!settings.customGeminiApiKey.trim() && runtimeConfig && !runtimeConfig.requiresClientApiKey) {
+      return "server" as const;
+    }
+
+    return "gemini-api-key" as const;
+  }
+
+  return runtimeConfig && !runtimeConfig.requiresClientApiKey ? "server" : "gemini-api-key";
 }
 
 function UploadDropzone({
@@ -923,7 +1047,7 @@ function UploadDropzone({
         </div>
         <strong>{title}</strong>
         <p>{description}</p>
-        <span className={styles.dropzoneHint}>{selectedFileName ? `선택됨: ${selectedFileName}` : hint}</span>
+        <span className={styles.dropzoneHint}>{selectedFileName ? `선택됨 ${selectedFileName}` : hint}</span>
       </button>
     </>
   );
@@ -952,7 +1076,7 @@ function createDefaultEditorDraftState(result: GeneratedResult): PdpEditorDraftS
     sectionOptions: {},
     overlaysBySection: {},
     defaultCopyLanguage: "ko",
-    notice: "섹션 컷을 고르고 텍스트를 배치한 뒤 바로 다운로드할 수 있습니다.",
+    notice: "섹션 카드를 고르고 텍스트를 배치한 뒤 바로 다운로드할 수 있습니다.",
     workbenchTab: "image",
     workbenchState: {
       x: 756,
@@ -995,5 +1119,74 @@ function formatCompactFileName(fileName: string, maxBaseLength = 30) {
 
   const leadingLength = Math.max(14, Math.floor(maxBaseLength * 0.58));
   const trailingLength = Math.max(8, maxBaseLength - leadingLength);
-  return `${baseName.slice(0, leadingLength)}…${baseName.slice(-trailingLength)}${extension}`;
+  return `${baseName.slice(0, leadingLength)}...${baseName.slice(-trailingLength)}${extension}`;
+}
+
+function loadPdpWorkspaceSnapshot(): PdpWorkspaceSnapshot {
+  if (typeof window === "undefined") {
+    return DEFAULT_WORKSPACE_SNAPSHOT;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(PDP_WORKSPACE_SNAPSHOT_STORAGE_KEY);
+    if (!rawValue) {
+      return DEFAULT_WORKSPACE_SNAPSHOT;
+    }
+
+    const parsed = JSON.parse(rawValue) as Partial<PdpWorkspaceSnapshot>;
+    return {
+      additionalInfo: typeof parsed.additionalInfo === "string" ? parsed.additionalInfo : "",
+      desiredTone: typeof parsed.desiredTone === "string" ? parsed.desiredTone : "",
+      aspectRatio:
+        parsed.aspectRatio === "1:1" ||
+        parsed.aspectRatio === "3:4" ||
+        parsed.aspectRatio === "4:3" ||
+        parsed.aspectRatio === "9:16" ||
+        parsed.aspectRatio === "16:9"
+          ? parsed.aspectRatio
+          : "9:16"
+    };
+  } catch {
+    return DEFAULT_WORKSPACE_SNAPSHOT;
+  }
+}
+
+function savePdpWorkspaceSnapshot(snapshot: PdpWorkspaceSnapshot) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(PDP_WORKSPACE_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
+}
+
+function clearPdpWorkspaceSnapshot() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(PDP_WORKSPACE_SNAPSHOT_STORAGE_KEY);
+}
+
+function loadPdpLastDraftId() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.localStorage.getItem(PDP_LAST_DRAFT_STORAGE_KEY);
+}
+
+function savePdpLastDraftId(draftId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(PDP_LAST_DRAFT_STORAGE_KEY, draftId);
+}
+
+function clearPdpLastDraftId() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(PDP_LAST_DRAFT_STORAGE_KEY);
 }

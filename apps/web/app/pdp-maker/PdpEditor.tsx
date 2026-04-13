@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Copy,
   Download,
   Globe2,
   Image as ImageIcon,
@@ -33,6 +34,7 @@ import type {
   AspectRatio,
   GeneratedResult,
   ImageGenOptions,
+  PdpImageModel,
   PdpCopyLanguage,
   PdpGenerateImageResponse,
   ReferenceModelUsage
@@ -54,6 +56,7 @@ interface PdpEditorProps {
   initialResult: GeneratedResult;
   aspectRatio: AspectRatio;
   geminiApiKey?: string | null;
+  imageModel: PdpImageModel;
   desiredTone: string;
   initialDraftState?: PdpEditorDraftState | null;
   lastSavedAt?: string | null;
@@ -151,6 +154,7 @@ export function PdpEditor({
   initialResult,
   aspectRatio,
   geminiApiKey,
+  imageModel,
   desiredTone,
   initialDraftState,
   lastSavedAt,
@@ -172,6 +176,8 @@ export function PdpEditor({
   );
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [errorDetail, setErrorDetail] = useState("");
+  const [showErrorDetail, setShowErrorDetail] = useState(false);
   const [notice, setNotice] = useState(
     () => initialDraftState?.notice ?? "섹션 컷을 고르고 텍스트를 배치한 뒤 바로 다운로드할 수 있습니다."
   );
@@ -226,6 +232,8 @@ export function PdpEditor({
     setEditingOverlayId(null);
     setActiveColorPalette(null);
     setErrorMessage("");
+    setErrorDetail("");
+    setShowErrorDetail(false);
   }, [currentSectionIndex]);
 
   useEffect(() => {
@@ -1160,6 +1168,8 @@ export function PdpEditor({
   const handleGenerateImage = async () => {
     setIsGeneratingImage(true);
     setErrorMessage("");
+    setErrorDetail("");
+    setShowErrorDetail(false);
 
     try {
       const response = await apiJson<PdpGenerateImageResponse>("/pdp/images", {
@@ -1169,6 +1179,7 @@ export function PdpEditor({
           section: currentSection,
           aspectRatio,
           desiredTone: desiredTone || undefined,
+          imageModel,
           options: {
             ...currentOptions,
             headline: currentSection.headline,
@@ -1185,6 +1196,8 @@ export function PdpEditor({
 
       if (!response.ok) {
         setErrorMessage(response.message);
+        setErrorDetail(response.detail ?? "");
+        setShowErrorDetail(Boolean(response.detail));
         return;
       }
 
@@ -1202,6 +1215,8 @@ export function PdpEditor({
     } catch (error) {
       setIsGeneratingImage(false);
       setErrorMessage(error instanceof Error ? error.message : "이미지를 다시 만들지 못했습니다.");
+      setErrorDetail(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+      setShowErrorDetail(true);
     }
   };
 
@@ -1211,6 +1226,8 @@ export function PdpEditor({
   ) => {
     if (!currentSection.generatedImage) {
       setErrorMessage("이미지를 먼저 생성해야 텍스트를 올릴 수 있습니다.");
+      setErrorDetail("");
+      setShowErrorDetail(false);
       return;
     }
 
@@ -1274,6 +1291,8 @@ export function PdpEditor({
   const handleAddShapeLayer = () => {
     if (!currentSection.generatedImage) {
       setErrorMessage("이미지를 먼저 생성해야 배경 사각형을 배치할 수 있습니다.");
+      setErrorDetail("");
+      setShowErrorDetail(false);
       return;
     }
 
@@ -1455,6 +1474,8 @@ export function PdpEditor({
       setNotice(`${getDisplaySectionName(currentSection)} 컷을 다운로드했습니다.`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "이미지를 다운로드하지 못했습니다.");
+      setErrorDetail("");
+      setShowErrorDetail(false);
     }
   };
 
@@ -1465,6 +1486,8 @@ export function PdpEditor({
 
     if (!downloadableSections.length) {
       setErrorMessage("다운로드할 이미지가 아직 없습니다.");
+      setErrorDetail("");
+      setShowErrorDetail(false);
       return;
     }
 
@@ -1486,6 +1509,8 @@ export function PdpEditor({
       setNotice(`${downloadableSections.length}개 섹션 이미지를 ZIP으로 다운로드했습니다.`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "전체 이미지를 ZIP으로 다운로드하지 못했습니다.");
+      setErrorDetail("");
+      setShowErrorDetail(false);
     } finally {
       setIsDownloadingAll(false);
     }
@@ -1547,9 +1572,30 @@ export function PdpEditor({
         <div className={styles.noticeRow} onClick={stopShellClick}>
           <div className={styles.noticeBanner}>{notice}</div>
           {errorMessage ? (
-            <div className={styles.errorBanner}>
-              <AlertCircle size={16} />
-              {errorMessage}
+            <div className={styles.errorPanel}>
+              <div className={styles.errorBanner}>
+                <AlertCircle size={16} />
+                {errorMessage}
+              </div>
+              {errorDetail ? (
+                <div className={styles.errorDetailWrap}>
+                  <button className={styles.inlineButton} onClick={() => setShowErrorDetail((current) => !current)} type="button">
+                    {showErrorDetail ? "로그 숨기기" : "로그 보기"}
+                  </button>
+                  {showErrorDetail ? (
+                    <div className={styles.errorDetail}>
+                      <div className={styles.errorDetailHeader}>
+                        <strong>API Detail</strong>
+                        <button className={styles.inlineButton} onClick={() => navigator.clipboard.writeText(errorDetail)} type="button">
+                          <Copy size={14} />
+                          복사
+                        </button>
+                      </div>
+                      <pre>{errorDetail}</pre>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>

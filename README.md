@@ -24,3 +24,9 @@ pnpm --filter @runacademy/api dev
 - 루트 `/`는 상세페이지 마법사 전용 홈 화면입니다.
 - 소싱 관련 작업은 `sourcing-maker-10`에서 진행하세요.
 - 예전 실험 라우트가 일부 남아 있어도 현재 주 진입점은 `/pdp-maker`입니다.
+
+## Vertex AI Default Setup
+- Local development can default to Vertex AI by creating `.env` in the repo root.
+- This repo now includes `vertex.env.example` as a safe template.
+- Recommended local auth is `gcloud auth application-default login`.
+- Current default image model for the PDP maker is `gemini-3.1-flash-image-preview` and it is shown in the UI as `Nano Banana 2`.

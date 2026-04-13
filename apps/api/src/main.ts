@@ -160,15 +160,22 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/v1/pdp/config") {
+      respondJson(res, 200, pdpController.config());
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/v1/pdp/analyze") {
+      const geminiKeyOverride = readGeminiApiKeyOverride(req);
       const body = await readJsonBody<PdpAnalyzeRequest>(req);
-      respondJson(res, 200, await pdpController.analyze(body, readGeminiApiKeyOverride(req)));
+      respondJson(res, 200, await pdpController.analyze(body, geminiKeyOverride));
       return;
     }
 
     if (req.method === "POST" && pathname === "/v1/pdp/images") {
+      const geminiKeyOverride = readGeminiApiKeyOverride(req);
       const body = await readJsonBody<PdpGenerateImageRequest>(req);
-      respondJson(res, 200, await pdpController.generateImage(body, readGeminiApiKeyOverride(req)));
+      respondJson(res, 200, await pdpController.generateImage(body, geminiKeyOverride));
       return;
     }
 
@@ -242,8 +249,9 @@ const server = createServer(async (req, res) => {
 });
 
 const port = Number(process.env.PORT ?? 4000);
-server.listen(port, "127.0.0.1", () => {
-  console.log(`[api] listening on http://127.0.0.1:${port}`);
+const host = process.env.HOST ?? (process.env.VERCEL ? "0.0.0.0" : "127.0.0.1");
+server.listen(port, host, () => {
+  console.log(`[api] listening on http://${host}:${port}`);
 });
 
 function applyCors(res: ServerResponse) {

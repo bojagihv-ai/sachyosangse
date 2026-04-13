@@ -1,18 +1,38 @@
-import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
+﻿import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import type {
   AspectRatio,
   ImageGenOptions,
   LandingPageBlueprint,
+  PdpImageModel,
+  PdpImageModelOption,
   PdpGuidePriorityMode,
   PdpAnalyzeRequest,
   PdpErrorCode,
+  PdpRuntimeConfigResponse,
   SectionBlueprint
 } from "@runacademy/shared";
 
 const ANALYZE_MODEL = "gemini-3.1-pro-preview";
-const IMAGE_MODEL = "gemini-3-pro-image-preview";
+const DEFAULT_IMAGE_MODEL: PdpImageModel = "gemini-3.1-flash-image-preview";
 const DEFAULT_IMAGE_MIME = "image/jpeg";
 const REFERENCE_MODEL_MAX_ATTEMPTS = 3;
+const SUPPORTED_IMAGE_MODELS: PdpImageModelOption[] = [
+  {
+    value: "gemini-3.1-flash-image-preview",
+    label: "Nano Banana 2",
+    description: "추천 기본값. Gemini 3.1 Flash Image preview로 속도와 퀄리티의 균형이 가장 좋습니다."
+  },
+  {
+    value: "gemini-3-pro-image-preview",
+    label: "Nano Banana Pro",
+    description: "가장 공들인 프리미엄 컷용. 시간이 조금 더 걸려도 완성도를 우선할 때 적합합니다."
+  },
+  {
+    value: "gemini-2.5-flash-image",
+    label: "Nano Banana",
+    description: "이전 세대 밸런스형 옵션. 이미 써 본 결과와 비슷한 느낌을 유지하고 싶을 때 적합합니다."
+  }
+];
 
 type GeneratedImagePayload = {
   base64: string;
@@ -66,9 +86,22 @@ export class PdpServiceError extends Error {
 }
 
 export class PdpService {
+  getRuntimeConfig(): PdpRuntimeConfigResponse {
+    const serverProvider = resolveServerProvider();
+
+    return {
+      ok: true,
+      provider: serverProvider,
+      requiresClientApiKey: serverProvider === "unconfigured",
+      defaultImageModel: DEFAULT_IMAGE_MODEL,
+      availableImageModels: SUPPORTED_IMAGE_MODELS
+    };
+  }
+
   async analyzeProduct(request: PdpAnalyzeRequest, geminiApiKeyOverride?: string) {
     const normalizedImage = sanitizeBase64Payload(request.imageBase64);
     const mimeType = normalizeMimeType(request.mimeType);
+    const imageModel = normalizeRequestedImageModel(request.imageModel);
     const referenceModelImage = normalizeReferenceModelImage(request.modelImageBase64, request.modelImageMimeType);
     const client = this.getClient(geminiApiKeyOverride);
     const referenceModelProfile =
@@ -79,6 +112,7 @@ export class PdpService {
         model: ANALYZE_MODEL,
         contents: [
           {
+            role: "user",
             parts: [
               buildHighResolutionInlinePart(mimeType, normalizedImage),
               ...(referenceModelImage ? [buildHighResolutionInlinePart(referenceModelImage.mimeType, referenceModelImage.base64)] : []),
@@ -159,7 +193,7 @@ export class PdpService {
     if (!firstSection) {
       throw new PdpServiceError(
         "GEMINI_RESPONSE_INVALID",
-        "상세페이지 섹션을 생성하지 못했습니다.",
+        "?곸꽭?섏씠吏 ?뱀뀡???앹꽦?섏? 紐삵뻽?듬땲??",
         "No sections returned from analyze response."
       );
     }
@@ -169,6 +203,8 @@ export class PdpService {
       section: firstSection,
       aspectRatio: request.aspectRatio,
       desiredTone: request.desiredTone,
+      imageModel,
+      client,
       options: {
         style: "studio",
         withModel: true,
@@ -200,6 +236,7 @@ export class PdpService {
     section: SectionBlueprint;
     aspectRatio: AspectRatio;
     desiredTone?: string;
+    imageModel?: PdpImageModel;
     options?: ImageGenOptions;
   }, geminiApiKeyOverride?: string) {
     const client = this.getClient(geminiApiKeyOverride);
@@ -237,12 +274,14 @@ export class PdpService {
     section: SectionBlueprint;
     aspectRatio: AspectRatio;
     desiredTone?: string;
+    imageModel?: PdpImageModel;
     options?: InternalImageGenOptions;
     client?: GoogleGenAI;
   }): Promise<GeneratedImagePayload> {
     const client = request.client ?? this.getClient();
     const originalImageBase64 = sanitizeBase64Payload(request.originalImageBase64);
     const section = normalizeSection(request.section, 0);
+    const imageModel = normalizeRequestedImageModel(request.imageModel);
     const normalizedReferenceModel = normalizeReferenceModelImage(
       request.options?.referenceModelImageBase64,
       request.options?.referenceModelImageMimeType
@@ -256,7 +295,7 @@ export class PdpService {
     if (!section.prompt_en) {
       throw new PdpServiceError(
         "INVALID_REQUEST",
-        "이미지 프롬프트가 없는 섹션입니다.",
+        "?대?吏 ?꾨＼?꾪듃媛 ?녿뒗 ?뱀뀡?낅땲??",
         "Section prompt_en is missing."
       );
     }
@@ -299,10 +338,13 @@ export class PdpService {
         });
 
         const response = await client.models.generateContent({
-          model: IMAGE_MODEL,
-          contents: {
-            parts
-          },
+          model: imageModel,
+          contents: [
+            {
+              role: "user",
+              parts
+            }
+          ],
           config: {
             imageConfig: {
               aspectRatio: request.aspectRatio
@@ -315,7 +357,7 @@ export class PdpService {
         if (!nextImage) {
           throw new PdpServiceError(
             "PDP_IMAGE_GENERATION_FAILED",
-            "이미지를 생성하지 못했습니다.",
+            "?대?吏瑜??앹꽦?섏? 紐삵뻽?듬땲??",
             "Gemini image response did not include inline image data."
           );
         }
@@ -346,7 +388,7 @@ export class PdpService {
     if (!lastGeneratedImage) {
       throw new PdpServiceError(
         "PDP_IMAGE_GENERATION_FAILED",
-        "이미지를 생성하지 못했습니다.",
+        "?대?吏瑜??앹꽦?섏? 紐삵뻽?듬땲??",
         "No image was generated during the retry loop."
       );
     }
@@ -357,14 +399,49 @@ export class PdpService {
   private getClient(geminiApiKeyOverride?: string) {
     const apiKey = geminiApiKeyOverride?.trim();
 
-    if (!apiKey) {
-      throw new PdpServiceError(
-        "GEMINI_API_KEY_MISSING",
-        "설정 메뉴에서 본인 Gemini API 키를 입력해 주세요."
-      );
+    if (apiKey) {
+      return new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
     }
 
-    return new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
+    const serverProvider = resolveServerProvider();
+
+    if (serverProvider === "vertex-ai") {
+      const project = process.env.GOOGLE_CLOUD_PROJECT?.trim();
+      const location = process.env.GOOGLE_CLOUD_LOCATION?.trim() || "global";
+
+      if (!project) {
+        throw new PdpServiceError(
+          "INVALID_REQUEST",
+          "Vertex AI 프로젝트 설정이 비어 있습니다.",
+          "GOOGLE_CLOUD_PROJECT must be set when GOOGLE_GENAI_USE_VERTEXAI is enabled."
+        );
+      }
+
+      return new GoogleGenAI({
+        vertexai: true,
+        project,
+        location
+      });
+    }
+
+    if (serverProvider === "gemini-api-key") {
+      const serverApiKey = readServerGeminiApiKey();
+
+      if (!serverApiKey) {
+        throw new PdpServiceError(
+          "GEMINI_API_KEY_MISSING",
+          "서버 Gemini API 키가 비어 있습니다.",
+          "Set GOOGLE_API_KEY or GEMINI_API_KEY for server-side Gemini usage."
+        );
+      }
+
+      return new GoogleGenAI({ apiKey: serverApiKey, apiVersion: "v1alpha" });
+    }
+
+    throw new PdpServiceError(
+      "GEMINI_API_KEY_MISSING",
+      "설정 메뉴에서 본인 Gemini API 키를 입력하거나, 서버 Vertex AI 연결을 먼저 설정해 주세요."
+    );
   }
 
   private async extractReferenceModelProfile(client: GoogleGenAI, referenceModelImage: NormalizedReferenceModelImage) {
@@ -372,6 +449,7 @@ export class PdpService {
       model: ANALYZE_MODEL,
       contents: [
         {
+          role: "user",
           parts: [
             {
               text:
@@ -429,6 +507,7 @@ export class PdpService {
       model: ANALYZE_MODEL,
       contents: [
         {
+          role: "user",
           parts: [
             {
               text: buildValidationPrompt(input.referenceModelProfile, input.expectedStyle)
@@ -473,13 +552,22 @@ export function toPdpErrorResponse(error: unknown) {
   }
 
   const detail = stringifyError(error);
-  const message = error instanceof Error ? error.message : "상세페이지 마법사 처리 중 오류가 발생했습니다.";
+  const message = error instanceof Error ? error.message : "?곸꽭?섏씠吏 留덈쾿??泥섎━ 以??ㅻ쪟媛 諛쒖깮?덉뒿?덈떎.";
+
+  if (isImageProcessingError(`${message}\n${detail}`)) {
+    return {
+      ok: false as const,
+      code: "INVALID_IMAGE_PAYLOAD" as const,
+      message: "?대?吏 ?덉쭏 ?먮뒗 ?뺤떇 臾몄젣濡?AI媛 ?대?吏瑜??쎌? 紐삵뻽?듬땲?? ?ㅻⅨ ?먮낯 ?대?吏(?좊챸??JPG/PNG)濡??ㅼ떆 ?쒕룄??二쇱꽭??",
+      detail
+    };
+  }
 
   if (isQuotaError(message)) {
     return {
       ok: false as const,
       code: "GEMINI_QUOTA_EXCEEDED" as const,
-      message: "AI 사용량이 초과되었습니다. 잠시 후 다시 시도하거나 quota 상태를 확인해 주세요.",
+      message: "AI ?ъ슜?됱씠 珥덇낵?섏뿀?듬땲?? ?좎떆 ???ㅼ떆 ?쒕룄?섍굅??quota ?곹깭瑜??뺤씤??二쇱꽭??",
       detail
     };
   }
@@ -488,7 +576,7 @@ export function toPdpErrorResponse(error: unknown) {
     return {
       ok: false as const,
       code: "GEMINI_RESPONSE_INVALID" as const,
-      message: "AI 응답을 해석하지 못했습니다. 같은 이미지로 다시 시도해 주세요.",
+      message: "AI ?묐떟???댁꽍?섏? 紐삵뻽?듬땲?? 媛숈? ?대?吏濡??ㅼ떆 ?쒕룄??二쇱꽭??",
       detail
     };
   }
@@ -496,7 +584,7 @@ export function toPdpErrorResponse(error: unknown) {
   return {
     ok: false as const,
     code: "PDP_ANALYZE_FAILED" as const,
-    message: "상세페이지 마법사 처리 중 오류가 발생했습니다.",
+    message: "?곸꽭?섏씠吏 留덈쾿??泥섎━ 以??ㅻ쪟媛 諛쒖깮?덉뒿?덈떎.",
     detail
   };
 }
@@ -507,7 +595,7 @@ function normalizeMimeType(mimeType: string) {
   if (!normalized.startsWith("image/")) {
     throw new PdpServiceError(
       "INVALID_IMAGE_PAYLOAD",
-      "이미지 파일만 업로드할 수 있습니다.",
+      "?대?吏 ?뚯씪留??낅줈?쒗븷 ???덉뒿?덈떎.",
       `Unsupported mime type: ${mimeType}`
     );
   }
@@ -523,7 +611,7 @@ function sanitizeBase64Payload(input: string) {
   if (!normalized || !/^[A-Za-z0-9+/]+=*$/.test(normalized)) {
     throw new PdpServiceError(
       "INVALID_IMAGE_PAYLOAD",
-      "이미지 데이터가 올바르지 않습니다.",
+      "?대?吏 ?곗씠?곌? ?щ컮瑜댁? ?딆뒿?덈떎.",
       "Malformed base64 payload."
     );
   }
@@ -536,7 +624,7 @@ function sanitizeBase64Payload(input: string) {
   } catch {
     throw new PdpServiceError(
       "INVALID_IMAGE_PAYLOAD",
-      "이미지 데이터를 읽을 수 없습니다.",
+      "?대?吏 ?곗씠?곕? ?쎌쓣 ???놁뒿?덈떎.",
       "Buffer.from failed for image payload."
     );
   }
@@ -550,65 +638,65 @@ function buildAnalyzePrompt(
   referenceModelProfile?: ReferenceModelProfile | null
 ) {
   const referenceModelPrompt = referenceModelProfile
-    ? `[참고 모델 이미지가 함께 제공됨]: 모델이 포함되는 컷은 업로드된 동일 인물의 정체성을 유지해야 합니다.
-- 유지할 핵심 특성: ${referenceModelProfile.keepTraits.join(", ")}
-- 식별 포인트: ${referenceModelProfile.distinctiveFeatures.join(", ")}
-- 전체 인상: ${referenceModelProfile.overallVibe}`
+    ? `[李멸퀬 紐⑤뜽 ?대?吏媛 ?④퍡 ?쒓났??: 紐⑤뜽???ы븿?섎뒗 而룹? ?낅줈?쒕맂 ?숈씪 ?몃Ъ???뺤껜?깆쓣 ?좎??댁빞 ?⑸땲??
+- ?좎????듭떖 ?뱀꽦: ${referenceModelProfile.keepTraits.join(", ")}
+- ?앸퀎 ?ъ씤?? ${referenceModelProfile.distinctiveFeatures.join(", ")}
+- ?꾩껜 ?몄긽: ${referenceModelProfile.overallVibe}`
     : "";
 
   return `
-이 제품 이미지를 분석하여 4~6개의 핵심 섹션으로 구성된 상세페이지 전체 블루프린트를 설계해주세요.
-${additionalInfo ? `[사용자 추가 정보]: ${additionalInfo}` : ""}
-${desiredTone ? `[원하는 디자인 톤]: ${desiredTone}` : ""}
+???쒗뭹 ?대?吏瑜?遺꾩꽍?섏뿬 4~6媛쒖쓽 ?듭떖 ?뱀뀡?쇰줈 援ъ꽦???곸꽭?섏씠吏 ?꾩껜 釉붾（?꾨┛?몃? ?ㅺ퀎?댁＜?몄슂.
+${additionalInfo ? `[?ъ슜??異붽? ?뺣낫]: ${additionalInfo}` : ""}
+${desiredTone ? `[?먰븯???붿옄????: ${desiredTone}` : ""}
 ${referenceModelPrompt}
 
-# 섹션 템플릿(필수 필드)
+# ?뱀뀡 ?쒗뵆由??꾩닔 ?꾨뱶)
 - section_id: S1~S6
-- section_name: (예: 히어로/체크리스트/베네핏/근거/사용법/후기 등)
-- goal: 이 섹션의 역할(짧은 한 문장)
-- headline: 한국어 1줄(강하게)
-- headline_en: headline의 자연스러운 영어 번역 1줄
-- subheadline: 한국어 1줄(명확하게)
-- subheadline_en: subheadline의 자연스러운 영어 번역 1줄
-- bullets: 한국어 3개(스캔용, 각 1줄)
-- bullets_en: bullets의 자연스러운 영어 번역 3개
-- trust_or_objection_line: 한국어 불안 제거/신뢰 1문장
-- trust_or_objection_line_en: trust_or_objection_line의 자연스러운 영어 번역 1문장
-- CTA: (있으면) 한국어 1줄
-- CTA_en: CTA의 자연스러운 영어 번역 1줄
-- layout_notes: 이미지 레이아웃 지시(짧게)
-- compliance_notes: 카테고리별 규제/표현 주의(짧게)
+- section_name: (?? ?덉뼱濡?泥댄겕由ъ뒪??踰좊꽕??洹쇨굅/?ъ슜踰??꾧린 ??
+- goal: ???뱀뀡????븷(吏㏃? ??臾몄옣)
+- headline: ?쒓뎅??1以?媛뺥븯寃?
+- headline_en: headline???먯뿰?ㅻ윭???곸뼱 踰덉뿭 1以?
+- subheadline: ?쒓뎅??1以?紐낇솗?섍쾶)
+- subheadline_en: subheadline???먯뿰?ㅻ윭???곸뼱 踰덉뿭 1以?
+- bullets: ?쒓뎅??3媛??ㅼ틪?? 媛?1以?
+- bullets_en: bullets???먯뿰?ㅻ윭???곸뼱 踰덉뿭 3媛?
+- trust_or_objection_line: ?쒓뎅??遺덉븞 ?쒓굅/?좊ː 1臾몄옣
+- trust_or_objection_line_en: trust_or_objection_line???먯뿰?ㅻ윭???곸뼱 踰덉뿭 1臾몄옣
+- CTA: (?덉쑝硫? ?쒓뎅??1以?
+- CTA_en: CTA???먯뿰?ㅻ윭???곸뼱 踰덉뿭 1以?
+- layout_notes: ?대?吏 ?덉씠?꾩썐 吏??吏㏐쾶)
+- compliance_notes: 移댄뀒怨좊━蹂?洹쒖젣/?쒗쁽 二쇱쓽(吏㏐쾶)
 
-# 섹션 구성 원칙(강제)
-- 베네핏은 3개 고정
-- 근거 섹션은 반드시 결과→조건→해석 3단으로 작성
-- 리뷰 섹션은 전/후 사진보다 사용감 문장 후기 카드 6~12개 우선
-- 사용법/루틴은 선택지를 2~3개로 줄여 선택 피로를 없앨 것
-- CTA는 최소 2회 이상 배치
-- 각 섹션의 이미지는 단순한 제품 누끼나 그래픽이 아닌 소비자의 구매 전환을 유도할 수 있는 고품질 광고 사진 느낌으로 기획할 것
-- 첫 번째 섹션은 구매 전환에 가장 중요하므로 반드시 매력적인 모델이 제품과 함께 연출된 컷으로 프롬프트를 작성할 것
-- 각 섹션 이미지는 해당 헤드라인과 서브헤드라인의 메시지를 시각적으로 전달해야 함
+# ?뱀뀡 援ъ꽦 ?먯튃(媛뺤젣)
+- 踰좊꽕?륁? 3媛?怨좎젙
+- 洹쇨굅 ?뱀뀡? 諛섎뱶??寃곌낵?믪“嫄닳넂?댁꽍 3?⑥쑝濡??묒꽦
+- 由щ럭 ?뱀뀡? ?????ъ쭊蹂대떎 ?ъ슜媛?臾몄옣 ?꾧린 移대뱶 6~12媛??곗꽑
+- ?ъ슜踰?猷⑦떞? ?좏깮吏瑜?2~3媛쒕줈 以꾩뿬 ?좏깮 ?쇰줈瑜??놁븿 寃?
+- CTA??理쒖냼 2???댁긽 諛곗튂
+- 媛??뱀뀡???대?吏???⑥닚???쒗뭹 ?꾨겮??洹몃옒?쎌씠 ?꾨땶 ?뚮퉬?먯쓽 援щℓ ?꾪솚???좊룄?????덈뒗 怨좏뭹吏?愿묎퀬 ?ъ쭊 ?먮굦?쇰줈 湲고쉷??寃?
+- 泥?踰덉㎏ ?뱀뀡? 援щℓ ?꾪솚??媛??以묒슂?섎?濡?諛섎뱶??留ㅻ젰?곸씤 紐⑤뜽???쒗뭹怨??④퍡 ?곗텧??而룹쑝濡??꾨＼?꾪듃瑜??묒꽦??寃?
+- 媛??뱀뀡 ?대?吏???대떦 ?ㅻ뱶?쇱씤怨??쒕툕?ㅻ뱶?쇱씤??硫붿떆吏瑜??쒓컖?곸쑝濡??꾨떖?댁빞 ??
 
-# 섹션별 이미지 생성 프롬프트
+# ?뱀뀡蹂??대?吏 ?앹꽦 ?꾨＼?꾪듃
 - image_id: IMG_S1~IMG_S6
-- purpose: 이 이미지가 전달해야 하는 메시지(짧은 한 문장)
-- prompt_ko: 한국어 이미지 생성 프롬프트(1~2문장). 구도, 거리감, 시선 높이, 제품이 프레임에서 차지하는 비중을 함께 명시할 것.
-- prompt_en: 영어 프롬프트(실제 이미지 생성용). Include composition, framing distance, camera angle, product prominence, and the key subject action. Keep it neutral enough that studio/lifestyle/outdoor priority can still be controlled at generation time.
-- negative_prompt: 피해야 할 요소
-- style_guide: 전체 통일 스타일. 스튜디오는 정제된 세트/조명/질감, 라이프스타일은 현실감 있는 공간/행동, 아웃도어는 위치감/공기감/활동성을 분명히 적을 것. 이 값은 디자인 가이드 우선 모드에서만 강하게 적용될 수 있도록 작성할 것.
-- reference_usage: 업로드된 기존 제품 이미지를 어떻게 참고할지. 제품 형태, 라벨, 재질, 색감을 유지하는 기준을 명시할 것.
-- section_name, goal, layout_notes, compliance_notes, purpose, style_guide, reference_usage는 반드시 한국어로 작성할 것
-- 영어는 *_en 필드와 prompt_en에만 사용할 것
+- purpose: ???대?吏媛 ?꾨떖?댁빞 ?섎뒗 硫붿떆吏(吏㏃? ??臾몄옣)
+- prompt_ko: ?쒓뎅???대?吏 ?앹꽦 ?꾨＼?꾪듃(1~2臾몄옣). 援щ룄, 嫄곕━媛? ?쒖꽑 ?믪씠, ?쒗뭹???꾨젅?꾩뿉??李⑥??섎뒗 鍮꾩쨷???④퍡 紐낆떆??寃?
+- prompt_en: ?곸뼱 ?꾨＼?꾪듃(?ㅼ젣 ?대?吏 ?앹꽦??. Include composition, framing distance, camera angle, product prominence, and the key subject action. Keep it neutral enough that studio/lifestyle/outdoor priority can still be controlled at generation time.
+- negative_prompt: ?쇳빐?????붿냼
+- style_guide: ?꾩껜 ?듭씪 ?ㅽ??? ?ㅽ뒠?붿삤???뺤젣???명듃/議곕챸/吏덇컧, ?쇱씠?꾩뒪??쇱? ?꾩떎媛??덈뒗 怨듦컙/?됰룞, ?꾩썐?꾩뼱???꾩튂媛?怨듦린媛??쒕룞?깆쓣 遺꾨챸???곸쓣 寃? ??媛믪? ?붿옄??媛?대뱶 ?곗꽑 紐⑤뱶?먯꽌留?媛뺥븯寃??곸슜?????덈룄濡??묒꽦??寃?
+- reference_usage: ?낅줈?쒕맂 湲곗〈 ?쒗뭹 ?대?吏瑜??대뼸寃?李멸퀬?좎?. ?쒗뭹 ?뺥깭, ?쇰꺼, ?ъ쭏, ?됯컧???좎??섎뒗 湲곗???紐낆떆??寃?
+- section_name, goal, layout_notes, compliance_notes, purpose, style_guide, reference_usage??諛섎뱶???쒓뎅?대줈 ?묒꽦??寃?
+- ?곸뼱??*_en ?꾨뱶? prompt_en?먮쭔 ?ъ슜??寃?
 
-# 이미지 생성 공통 규칙
-- 세로형 상세페이지용
-- 이미지 내에 텍스트, 로고, 워터마크, 글자를 넣지 말 것
-- 배경은 단순하게 유지하고 제품/핵심 오브젝트에 시선을 집중시킬 것
-- 한 장에 메시지 하나만 전달할 것
-- 규제 리스크가 있으면 안전한 표현으로 수정할 것
-- JSON 외 텍스트를 붙이지 말고 모든 필드는 간결하게 작성할 것
+# ?대?吏 ?앹꽦 怨듯넻 洹쒖튃
+- ?몃줈???곸꽭?섏씠吏??
+- ?대?吏 ?댁뿉 ?띿뒪?? 濡쒓퀬, ?뚰꽣留덊겕, 湲?먮? ?ｌ? 留?寃?
+- 諛곌꼍? ?⑥닚?섍쾶 ?좎??섍퀬 ?쒗뭹/?듭떖 ?ㅻ툕?앺듃???쒖꽑??吏묒쨷?쒗궗 寃?
+- ???μ뿉 硫붿떆吏 ?섎굹留??꾨떖??寃?
+- 洹쒖젣 由ъ뒪?ш? ?덉쑝硫??덉쟾???쒗쁽?쇰줈 ?섏젙??寃?
+- JSON ???띿뒪?몃? 遺숈씠吏 留먭퀬 紐⑤뱺 ?꾨뱶??媛꾧껐?섍쾶 ?묒꽦??寃?
 
-응답은 반드시 제공된 JSON 스키마를 준수해야 합니다.
+?묐떟? 諛섎뱶???쒓났??JSON ?ㅽ궎留덈? 以?섑빐???⑸땲??
 `.trim();
 }
 
@@ -818,7 +906,7 @@ function parseBlueprintResponse(response: { text?: string }) {
   } catch (error) {
     throw new PdpServiceError(
       "GEMINI_RESPONSE_INVALID",
-      "AI 응답을 해석하지 못했습니다.",
+      "AI ?묐떟???댁꽍?섏? 紐삵뻽?듬땲??",
       stringifyError(error)
     );
   }
@@ -848,7 +936,7 @@ function sanitizeBlueprint(input: Partial<LandingPageBlueprint>) {
 function normalizeSection(section: Partial<SectionBlueprint>, index: number): SectionBlueprint {
   return {
     section_id: asString(section.section_id) || `S${index + 1}`,
-    section_name: asString(section.section_name) || `섹션 ${index + 1}`,
+    section_name: asString(section.section_name) || `?뱀뀡 ${index + 1}`,
     goal: asString(section.goal),
     headline: asString(section.headline),
     headline_en: asString(section.headline_en) || asString(section.headline),
@@ -870,7 +958,12 @@ function normalizeSection(section: Partial<SectionBlueprint>, index: number): Se
     image_id: asString(section.image_id) || `IMG_S${index + 1}`,
     purpose: asString(section.purpose),
     prompt_ko: asString(section.prompt_ko),
-    prompt_en: asString(section.prompt_en),
+    prompt_en:
+      asString(section.prompt_en) ||
+      asString(section.prompt_ko) ||
+      asString(section.headline_en) ||
+      asString(section.headline) ||
+      "Generate a premium product-centered commercial image with no text or watermark.",
     negative_prompt: asString(section.negative_prompt),
     style_guide: asString(section.style_guide),
     reference_usage: asString(section.reference_usage),
@@ -1028,7 +1121,7 @@ function parseReferenceModelProfileResponse(response: { text?: string }) {
   } catch (error) {
     throw new PdpServiceError(
       "GEMINI_RESPONSE_INVALID",
-      "참조 모델 이미지를 해석하지 못했습니다.",
+      "李몄“ 紐⑤뜽 ?대?吏瑜??댁꽍?섏? 紐삵뻽?듬땲??",
       stringifyError(error)
     );
   }
@@ -1049,7 +1142,7 @@ function parseGeneratedImageValidationResponse(response: { text?: string }) {
   } catch (error) {
     throw new PdpServiceError(
       "GEMINI_RESPONSE_INVALID",
-      "생성된 이미지 검증 응답을 해석하지 못했습니다.",
+      "?앹꽦???대?吏 寃利??묐떟???댁꽍?섏? 紐삵뻽?듬땲??",
       stringifyError(error)
     );
   }
@@ -1059,7 +1152,7 @@ function extractResponseText(response: { text?: string }) {
   if (!response.text) {
     throw new PdpServiceError(
       "GEMINI_RESPONSE_INVALID",
-      "AI 응답이 비어 있습니다.",
+      "AI ?묐떟??鍮꾩뼱 ?덉뒿?덈떎.",
       "Gemini did not return response.text."
     );
   }
@@ -1108,7 +1201,7 @@ function normalizeReferenceModelImage(base64?: string, mimeType?: string) {
   if (!mimeType?.trim()) {
     throw new PdpServiceError(
       "INVALID_IMAGE_PAYLOAD",
-      "모델 이미지 형식이 올바르지 않습니다.",
+      "紐⑤뜽 ?대?吏 ?뺤떇???щ컮瑜댁? ?딆뒿?덈떎.",
       "Reference model image is missing mime type."
     );
   }
@@ -1163,7 +1256,7 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = 2, delay
     if (isQuotaError(message)) {
       throw new PdpServiceError(
         "GEMINI_QUOTA_EXCEEDED",
-        "AI 사용량이 초과되었습니다. 잠시 후 다시 시도해 주세요.",
+        "AI ?ъ슜?됱씠 珥덇낵?섏뿀?듬땲?? ?좎떆 ???ㅼ떆 ?쒕룄??二쇱꽭??",
         message
       );
     }
@@ -1171,7 +1264,7 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = 2, delay
     if (isJsonError(message)) {
       throw new PdpServiceError(
         "GEMINI_RESPONSE_INVALID",
-        "AI 응답을 해석하지 못했습니다.",
+        "AI ?묐떟???댁꽍?섏? 紐삵뻽?듬땲??",
         message
       );
     }
@@ -1187,6 +1280,11 @@ function isQuotaError(message: string) {
 
 function isJsonError(message: string) {
   return message.includes("JSON") || message.includes("Unexpected token") || message.includes("Unterminated string");
+}
+
+function isImageProcessingError(message: string) {
+  const lowered = message.toLowerCase();
+  return lowered.includes("unable to process input image") || lowered.includes("input image");
 }
 
 function stringifyError(error: unknown) {
@@ -1220,3 +1318,26 @@ function wait(ms: number) {
 function toDataUrl(mimeType: string, base64: string) {
   return `data:${mimeType};base64,${base64}`;
 }
+
+function normalizeRequestedImageModel(imageModel?: string | null): PdpImageModel {
+  return SUPPORTED_IMAGE_MODELS.find((option) => option.value === imageModel)?.value ?? DEFAULT_IMAGE_MODEL;
+}
+
+function readServerGeminiApiKey() {
+  return process.env.GOOGLE_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim() || "";
+}
+
+function resolveServerProvider(): PdpRuntimeConfigResponse["provider"] {
+  const useVertexAi = ["1", "true", "yes", "on"].includes((process.env.GOOGLE_GENAI_USE_VERTEXAI ?? "").trim().toLowerCase());
+
+  if (useVertexAi) {
+    return "vertex-ai";
+  }
+
+  if (readServerGeminiApiKey()) {
+    return "gemini-api-key";
+  }
+
+  return "unconfigured";
+}
+

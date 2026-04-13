@@ -1,13 +1,22 @@
 "use client";
 
+import type { PdpImageModel } from "@runacademy/shared";
+
+export type PdpConnectionMode = "server" | "gemini-api-key";
+
 export interface PdpClientSettings {
+  connectionMode: PdpConnectionMode;
   customGeminiApiKey: string;
+  selectedImageModel: PdpImageModel;
 }
 
-const PDP_SETTINGS_STORAGE_KEY = "hanirum-pdp-maker-settings-v1";
+const PDP_SETTINGS_STORAGE_KEY = "hanirum-pdp-maker-settings-v2";
+export const DEFAULT_PDP_IMAGE_MODEL: PdpImageModel = "gemini-3.1-flash-image-preview";
 
 const DEFAULT_SETTINGS: PdpClientSettings = {
-  customGeminiApiKey: ""
+  connectionMode: "gemini-api-key",
+  customGeminiApiKey: "",
+  selectedImageModel: DEFAULT_PDP_IMAGE_MODEL
 };
 
 export function loadPdpClientSettings(): PdpClientSettings {
@@ -36,7 +45,7 @@ export function savePdpClientSettings(settings: PdpClientSettings) {
   window.localStorage.setItem(PDP_SETTINGS_STORAGE_KEY, JSON.stringify(normalizePdpClientSettings(settings)));
 }
 
-export function resolveGeminiApiKeyHeaderValue(settings?: PdpClientSettings) {
+export function resolveGeminiApiKeyHeaderValue(settings?: Pick<PdpClientSettings, "customGeminiApiKey">) {
   const nextSettings = settings ?? loadPdpClientSettings();
   const trimmed = nextSettings.customGeminiApiKey.trim();
   return trimmed || null;
@@ -49,11 +58,27 @@ export function maskGeminiApiKey(apiKey: string) {
   }
 
   const visiblePrefixLength = Math.min(10, trimmed.length);
-  return `${trimmed.slice(0, visiblePrefixLength)}${"•".repeat(Math.max(6, trimmed.length - visiblePrefixLength))}`;
+  return `${trimmed.slice(0, visiblePrefixLength)}${"*".repeat(Math.max(6, trimmed.length - visiblePrefixLength))}`;
 }
 
 function normalizePdpClientSettings(settings?: Partial<PdpClientSettings> | null): PdpClientSettings {
+  const connectionMode = settings?.connectionMode === "server" ? "server" : "gemini-api-key";
+
   return {
-    customGeminiApiKey: settings?.customGeminiApiKey?.trim() ?? ""
+    connectionMode,
+    customGeminiApiKey: settings?.customGeminiApiKey?.trim() ?? "",
+    selectedImageModel: normalizeImageModel(settings?.selectedImageModel)
   };
+}
+
+function normalizeImageModel(imageModel?: string | null): PdpImageModel {
+  if (
+    imageModel === "gemini-3.1-flash-image-preview" ||
+    imageModel === "gemini-3-pro-image-preview" ||
+    imageModel === "gemini-2.5-flash-image"
+  ) {
+    return imageModel;
+  }
+
+  return DEFAULT_PDP_IMAGE_MODEL;
 }

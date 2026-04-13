@@ -6,6 +6,22 @@ export type PdpModelCountry = "korea" | "japan" | "usa" | "france" | "germany" |
 export type PdpCopyLanguage = "ko" | "en";
 export type ReferenceModelUsage = "hero-only" | "all-sections";
 export type PdpGuidePriorityMode = "guide-first" | "style-first";
+export type PdpImageModel = "gemini-3.1-flash-image-preview" | "gemini-3-pro-image-preview" | "gemini-2.5-flash-image";
+export type PdpServerProvider = "vertex-ai" | "gemini-api-key" | "unconfigured";
+
+export interface PdpImageModelOption {
+  value: PdpImageModel;
+  label: string;
+  description: string;
+}
+
+export interface PdpRuntimeConfigResponse {
+  ok: true;
+  provider: PdpServerProvider;
+  requiresClientApiKey: boolean;
+  defaultImageModel: PdpImageModel;
+  availableImageModels: PdpImageModelOption[];
+}
 
 export interface ScorecardItem {
   category: string;
@@ -75,6 +91,7 @@ export interface PdpAnalyzeRequest {
   additionalInfo?: string;
   desiredTone?: string;
   aspectRatio: AspectRatio;
+  imageModel?: PdpImageModel;
 }
 
 export interface PdpAnalyzeSuccessResponse {
@@ -87,6 +104,7 @@ export interface PdpGenerateImageRequest {
   section: SectionBlueprint;
   aspectRatio: AspectRatio;
   desiredTone?: string;
+  imageModel?: PdpImageModel;
   options?: ImageGenOptions;
 }
 

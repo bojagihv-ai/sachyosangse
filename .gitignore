@@ -8,6 +8,8 @@ node_modules
 .next_prevercel_backup_*
 dist
 output
+.vercel
+apps/*/.vercel
 .env
 .env.*
 .local

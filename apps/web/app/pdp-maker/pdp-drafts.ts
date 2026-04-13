@@ -129,7 +129,7 @@ export async function listPdpDrafts(): Promise<PdpDraftSummary[]> {
       createdAt: record.createdAt,
       aspectRatio: record.aspectRatio,
       sectionCount: record.editorState?.sections.length ?? record.result?.blueprint.sections.length ?? 0,
-      stageLabel: record.result ? "편집 중" : "설정 초안",
+      stageLabel: record.result ? "\uD3B8\uC9D1 \uC911" : "\uC124\uC815 \uCD08\uC548",
       thumbnailUrl:
         record.editorState?.sections[0]?.generatedImage ??
         record.result?.blueprint.sections[0]?.generatedImage ??
@@ -177,7 +177,7 @@ export async function deletePdpDraft(id: string): Promise<void> {
 function buildDraftTitle(input: PdpDraftInput) {
   const rawFileName = input.preparedImage?.fileName ?? "";
   const cleanedFileName = rawFileName.replace(/\.[^.]+$/, "").trim();
-  const fallbackSection = input.editorState?.sections[0]?.section_name ?? input.result?.blueprint.sections[0]?.section_name ?? "상세페이지 초안";
+  const fallbackSection = input.editorState?.sections[0]?.section_name ?? input.result?.blueprint.sections[0]?.section_name ?? "\uC0C1\uC138\uD398\uC774\uC9C0 \uCD08\uC548";
   return cleanedFileName || fallbackSection;
 }
 
@@ -204,7 +204,7 @@ function normalizeDraftRecord(record: PdpDraftRecord): PdpDraftRecord {
     additionalInfo: record.additionalInfo ?? "",
     desiredTone: record.desiredTone ?? "",
     aspectRatio: normalizeAspectRatio(record.aspectRatio),
-    notice: record.notice ?? "저장된 작업을 불러왔습니다.",
+    notice: record.notice ?? "\uC800\uC7A5\uD55C \uC791\uC5C5\uC744 \uBD88\uB7EC\uC654\uC2B5\uB2C8\uB2E4.",
     editorState: normalizeEditorState(record.editorState, result)
   };
 }
@@ -282,7 +282,7 @@ function normalizeEditorState(editorState: PdpEditorDraftState | null | undefine
     sectionOptions,
     overlaysBySection,
     defaultCopyLanguage: editorState?.defaultCopyLanguage === "en" ? "en" : "ko",
-    notice: editorState?.notice ?? "저장된 작업을 이어서 편집할 수 있습니다.",
+    notice: editorState?.notice ?? "\uC800\uC7A5\uD55C \uC791\uC5C5\uC758 \uD3B8\uC9D1 \uC0C1\uD0DC\uB97C \uC774\uC5B4\uC11C \uBD88\uB7EC\uC654\uC2B5\uB2C8\uB2E4.",
     workbenchTab:
       editorState?.workbenchTab === "copy" ||
       editorState?.workbenchTab === "guide" ||
@@ -302,7 +302,7 @@ function normalizeEditorState(editorState: PdpEditorDraftState | null | undefine
 
 function buildFallbackDraftTitle(preparedImage: PreparedImageDraft | null, sections: SectionBlueprint[]) {
   const cleanedFileName = preparedImage?.fileName?.replace(/\.[^.]+$/, "").trim();
-  return cleanedFileName || sections[0]?.section_name || "상세페이지 초안";
+  return cleanedFileName || sections[0]?.section_name || "\uC0C1\uC138\uD398\uC774\uC9C0 \uCD08\uC548";
 }
 
 function normalizeAspectRatio(value: AspectRatio | string | undefined): AspectRatio {
@@ -324,13 +324,13 @@ function toDataUrl(image: PreparedImageDraft | null) {
 function openDraftDb() {
   return new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
-      reject(new Error("이 브라우저에서는 로컬 저장 기능을 사용할 수 없습니다."));
+      reject(new Error("This browser does not support local draft storage."));
       return;
     }
 
     const request = indexedDB.open(PDP_DRAFT_DB, PDP_DRAFT_VERSION);
 
-    request.onerror = () => reject(request.error ?? new Error("저장소를 열지 못했습니다."));
+    request.onerror = () => reject(request.error ?? new Error("Failed to open the local draft store."));
     request.onsuccess = () => resolve(request.result);
     request.onupgradeneeded = () => {
       const database = request.result;
@@ -355,11 +355,11 @@ function withStore<T>(mode: IDBTransactionMode, handler: (store: IDBObjectStore)
         };
         transaction.onerror = () => {
           database.close();
-          reject(transaction.error ?? new Error("저장소 작업에 실패했습니다."));
+          reject(transaction.error ?? new Error("Draft storage operation failed."));
         };
         transaction.onabort = () => {
           database.close();
-          reject(transaction.error ?? new Error("저장소 작업이 중단되었습니다."));
+          reject(transaction.error ?? new Error("Draft storage operation was aborted."));
         };
 
         handler(store)
@@ -377,6 +377,6 @@ function withStore<T>(mode: IDBTransactionMode, handler: (store: IDBObjectStore)
 function requestAsPromise<T>(request: IDBRequest<T>) {
   return new Promise<T>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB 요청에 실패했습니다."));
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
   });
 }

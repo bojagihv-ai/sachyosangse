@@ -4,6 +4,10 @@ import { PdpService, PdpServiceError, toPdpErrorResponse } from "./pdp.service";
 export class PdpController {
   constructor(private readonly pdpService = new PdpService()) {}
 
+  config() {
+    return this.pdpService.getRuntimeConfig();
+  }
+
   async analyze(body: PdpAnalyzeRequest, geminiApiKeyOverride?: string) {
     try {
       const result = await this.pdpService.analyzeProduct(body, geminiApiKeyOverride);
@@ -24,15 +28,26 @@ export class PdpController {
         ...result
       };
     } catch (error) {
-      return toPdpErrorResponse(
+      const normalizedError =
         error instanceof PdpServiceError
           ? error
           : new PdpServiceError(
               "PDP_IMAGE_GENERATION_FAILED",
               "이미지 생성 중 오류가 발생했습니다.",
               error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-            )
-      );
+            );
+
+      console.error("[pdp] image generation failed", {
+        code: normalizedError.code,
+        message: normalizedError.message,
+        detail: normalizedError.detail,
+        sectionId: body.section?.section_id,
+        sectionName: body.section?.section_name,
+        aspectRatio: body.aspectRatio,
+        hasGeminiApiKey: Boolean(geminiApiKeyOverride?.trim())
+      });
+
+      return toPdpErrorResponse(normalizedError);
     }
   }
 }
